@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 
-const API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyDdw2z1NqNknuNuZrc4lKlHvxA_O8s03ok';
+const API_KEY = process.env.GEMINI_API_KEY || 'PASTE_YOUR_KEY_HERE';
 const PORT = process.env.PORT || 8080;
 const MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
@@ -77,12 +77,13 @@ wss.on('connection', (browserWs) => {
     try {
       const msg = JSON.parse(data.toString());
       if (msg.type === 'audio' && geminiWs && geminiWs.readyState === WebSocket.OPEN && ready) {
+        // NEW format — use realtimeInput.audio instead of mediaChunks
         const realtimeInput = {
           realtimeInput: {
-            mediaChunks: [{
-              mimeType: 'audio/pcm;rate=16000',
-              data: msg.data
-            }]
+            audio: {
+              data: msg.data,
+              mimeType: 'audio/pcm;rate=16000'
+            }
           }
         };
         geminiWs.send(JSON.stringify(realtimeInput));

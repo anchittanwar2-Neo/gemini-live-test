@@ -101,10 +101,9 @@
   <div id="log">Waiting for connection...<br></div>
 
   <script>
-    // Change this to your Railway URL when deployed
     const WS_URL = window.location.hostname === 'localhost' || window.location.hostname === ''
       ? 'ws://localhost:8080'
-      : `wss://${window.location.hostname}`;
+      : 'wss://gemini-live-test-production.up.railway.app';
 
     const orb = document.getElementById('orb');
     const statusEl = document.getElementById('status');

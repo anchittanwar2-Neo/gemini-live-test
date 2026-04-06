@@ -212,6 +212,7 @@ Keep spoken responses under 60 words. Be warm and direct.` }]
   browserWs.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
+
       if (msg.type === 'audio' && geminiWs && geminiWs.readyState === WebSocket.OPEN && ready) {
         const realtimeInput = {
           realtimeInput: {
@@ -223,6 +224,17 @@ Keep spoken responses under 60 words. Be warm and direct.` }]
         };
         geminiWs.send(JSON.stringify(realtimeInput));
       }
+
+      if (msg.type === 'endTurn' && geminiWs && geminiWs.readyState === WebSocket.OPEN && ready) {
+        console.log('End of turn signal — triggering Gemini response');
+        geminiWs.send(JSON.stringify({
+          clientContent: {
+            turns: [],
+            turnComplete: true
+          }
+        }));
+      }
+
     } catch (e) {
       console.error('Error forwarding audio:', e.message);
     }

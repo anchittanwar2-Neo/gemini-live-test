@@ -8,24 +8,24 @@ const FILE_STORE_ID = 'fileSearchStores/fitness-coach-knowledge-bas-domdkpckvkx8
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
 
 const wss = new WebSocket.Server({ port: PORT });
-console.log(`Backend running on port ${PORT} (v2 with RAG + debug logging)`);
+console.log(`Backend running on port ${PORT} (v2 RAG - fixed)`);
 
 function searchKnowledgeBase(query) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      tools: [{
-        file_search: {
-          file_search_store_names: [FILE_STORE_ID]
-        }
-      }],
       contents: [{
         parts: [{ text: query }]
+      }],
+      tools: [{
+        fileSearch: {
+          fileSearchStoreNames: [FILE_STORE_ID]
+        }
       }]
     });
 
     const options = {
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`,
+      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -39,16 +39,34 @@ function searchKnowledgeBase(query) {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || 'No relevant information found.';
-          console.log('RAG result length:', text.length);
-          resolve(text);
+          console.log('RAG HTTP status:', res.statusCode);
+
+          // Log error if any
+          if (parsed.error) {
+            console.error('RAG API error:', JSON.stringify(parsed.error));
+            resolve('Knowledge base search returned an error. Please answer from general knowledge.');
+            return;
+          }
+
+          const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            console.log('RAG result (first 200 chars):', text.slice(0, 200));
+            resolve(text);
+          } else {
+            console.log('RAG full response:', JSON.stringify(parsed).slice(0, 500));
+            resolve('No specific information found in the knowledge base for this query.');
+          }
         } catch (e) {
-          reject(new Error('Failed to parse RAG response: ' + e.message));
+          console.error('RAG parse error:', e.message);
+          reject(e);
         }
       });
     });
 
-    req.on('error', reject);
+    req.on('error', (e) => {
+      console.error('RAG request error:', e.message);
+      reject(e);
+    });
     req.write(body);
     req.end();
   });
@@ -81,7 +99,7 @@ IMPORTANT: You MUST use the search_knowledge_base tool for ANY question about:
 - Nutrition plans or methodologies
 - Anything from course materials or books
 
-Do NOT answer these from memory. Always search first, then answer.
+Do NOT answer these from memory. Always search first, then answer based on the results.
 For truly simple questions (e.g. "how are you"), answer directly without searching.
 Keep spoken responses under 60 words. Be warm and direct.` }]
         },
@@ -110,14 +128,11 @@ Keep spoken responses under 60 words. Be warm and direct.` }]
   geminiWs.on('message', async (data) => {
     try {
       const msg = JSON.parse(data.toString());
-
-      // LOG EVERY MESSAGE TYPE for debugging
       const keys = Object.keys(msg);
-      console.log('Gemini msg keys:', keys.join(', '));
 
-      // Log full message if it's not audio (to avoid flooding logs)
-      if (!msg.serverContent?.modelTurn?.parts?.some(p => p.inlineData)) {
-        console.log('Gemini msg (no audio):', JSON.stringify(msg).slice(0, 300));
+      // Only log non-session-resumption messages
+      if (!msg.sessionResumptionUpdate) {
+        console.log('Gemini msg keys:', keys.join(', '));
       }
 
       if (msg.setupComplete !== undefined) {
@@ -127,9 +142,8 @@ Keep spoken responses under 60 words. Be warm and direct.` }]
         return;
       }
 
-      // Handle tool calls
       if (msg.toolCall) {
-        console.log('TOOL CALL RECEIVED:', JSON.stringify(msg.toolCall));
+        console.log('TOOL CALL:', JSON.stringify(msg.toolCall).slice(0, 300));
         const functionCalls = msg.toolCall.functionCalls || [];
         const responses = [];
 
@@ -147,11 +161,11 @@ Keep spoken responses under 60 words. Be warm and direct.` }]
                 response: { result }
               });
             } catch (e) {
-              console.error('RAG search failed:', e.message);
+              console.error('RAG failed:', e.message);
               responses.push({
                 id: call.id,
                 name: call.name,
-                response: { result: 'Search failed. Answer from general knowledge.' }
+                response: { result: 'Search failed. Please answer from general knowledge.' }
               });
             }
           }

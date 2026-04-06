@@ -8,29 +8,20 @@ const FILE_STORE_ID = 'fileSearchStores/fitness-coach-knowledge-bas-domdkpckvkx8
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
 
 const wss = new WebSocket.Server({ port: PORT });
-console.log(`Backend running on port ${PORT} (v2 RAG - fixed)`);
+console.log(`Backend running on port ${PORT} (v3 clean)`);
 
 function searchKnowledgeBase(query) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      contents: [{
-        parts: [{ text: query }]
-      }],
-      tools: [{
-        fileSearch: {
-          fileSearchStoreNames: [FILE_STORE_ID]
-        }
-      }]
+      contents: [{ parts: [{ text: query }] }],
+      tools: [{ fileSearch: { fileSearchStoreNames: [FILE_STORE_ID] } }]
     });
 
     const options = {
       hostname: 'generativelanguage.googleapis.com',
       path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`,
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      }
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
     };
 
     const req = https.request(options, (res) => {
@@ -39,22 +30,18 @@ function searchKnowledgeBase(query) {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          console.log('RAG HTTP status:', res.statusCode);
-
-          // Log error if any
           if (parsed.error) {
             console.error('RAG API error:', JSON.stringify(parsed.error));
-            resolve('Knowledge base search returned an error. Please answer from general knowledge.');
+            resolve('No specific info found. Answer from general knowledge.');
             return;
           }
-
           const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
           if (text) {
-            console.log('RAG result (first 200 chars):', text.slice(0, 200));
+            console.log('RAG result (200 chars):', text.slice(0, 200));
             resolve(text);
           } else {
-            console.log('RAG full response:', JSON.stringify(parsed).slice(0, 500));
-            resolve('No specific information found in the knowledge base for this query.');
+            console.log('RAG empty response:', JSON.stringify(parsed).slice(0, 300));
+            resolve('No specific info found in knowledge base.');
           }
         } catch (e) {
           console.error('RAG parse error:', e.message);
@@ -62,11 +49,7 @@ function searchKnowledgeBase(query) {
         }
       });
     });
-
-    req.on('error', (e) => {
-      console.error('RAG request error:', e.message);
-      reject(e);
-    });
+    req.on('error', reject);
     req.write(body);
     req.end();
   });
@@ -74,109 +57,67 @@ function searchKnowledgeBase(query) {
 
 wss.on('connection', (browserWs) => {
   console.log('Browser connected');
-
   let geminiWs = null;
   let ready = false;
 
   geminiWs = new WebSocket(GEMINI_WS_URL);
 
   geminiWs.on('open', () => {
-    console.log('Gemini WebSocket open — sending setup');
-
-    const setup = {
+    console.log('Gemini WS open — sending setup');
+    geminiWs.send(JSON.stringify({
       setup: {
         model: `models/${MODEL}`,
-        generation_config: {
-          response_modalities: ['AUDIO']
-        },
+        generation_config: { response_modalities: ['AUDIO'] },
         system_instruction: {
-          parts: [{ text: `You are a fitness coach on a voice call with access to a fitness knowledge base.
-
-IMPORTANT: You MUST use the search_knowledge_base tool for ANY question about:
-- Specific training protocols or programmes
-- Injury rehabilitation
-- Supplement protocols
-- Nutrition plans or methodologies
-- Anything from course materials or books
-
-Do NOT answer these from memory. Always search first, then answer based on the results.
-For truly simple questions (e.g. "how are you"), answer directly without searching.
-Keep spoken responses under 60 words. Be warm and direct.` }]
+          parts: [{ text: `You are a fitness coach on a voice call. You have a knowledge base tool.
+Use search_knowledge_base for ANY specific question about training protocols, rehab, supplements, nutrition plans, or course materials.
+For simple conversational questions, answer directly.
+Keep all spoken responses under 60 words. Be warm and practical.` }]
         },
         tools: [{
           function_declarations: [{
             name: 'search_knowledge_base',
-            description: 'Search the fitness coaching knowledge base. MUST be used for any specific fitness protocol, programme, rehab, supplement, or nutrition question.',
+            description: 'Search the fitness knowledge base for specific protocols, programmes, rehab, supplements, or course material questions.',
             parameters: {
               type: 'object',
-              properties: {
-                query: {
-                  type: 'string',
-                  description: 'The fitness question or topic to search for'
-                }
-              },
+              properties: { query: { type: 'string', description: 'The fitness topic to search for' } },
               required: ['query']
             }
           }]
         }]
       }
-    };
-
-    geminiWs.send(JSON.stringify(setup));
+    }));
   });
 
   geminiWs.on('message', async (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      const keys = Object.keys(msg);
-
-      // Only log non-session-resumption messages
-      if (!msg.sessionResumptionUpdate) {
-        console.log('Gemini msg keys:', keys.join(', '));
-      }
 
       if (msg.setupComplete !== undefined) {
-        console.log('Gemini setup complete — ready');
+        console.log('Gemini ready');
         ready = true;
         browserWs.send(JSON.stringify({ type: 'status', message: 'Gemini connected' }));
         return;
       }
 
       if (msg.toolCall) {
-        console.log('TOOL CALL:', JSON.stringify(msg.toolCall).slice(0, 300));
-        const functionCalls = msg.toolCall.functionCalls || [];
+        const calls = msg.toolCall.functionCalls || [];
         const responses = [];
-
-        for (const call of functionCalls) {
+        for (const call of calls) {
           if (call.name === 'search_knowledge_base') {
             const query = call.args?.query || '';
-            console.log('RAG search triggered:', query);
+            console.log('RAG triggered:', query);
             browserWs.send(JSON.stringify({ type: 'status', message: 'Searching knowledge base...' }));
-
             try {
               const result = await searchKnowledgeBase(query);
-              responses.push({
-                id: call.id,
-                name: call.name,
-                response: { result }
-              });
+              responses.push({ id: call.id, name: call.name, response: { result } });
             } catch (e) {
-              console.error('RAG failed:', e.message);
-              responses.push({
-                id: call.id,
-                name: call.name,
-                response: { result: 'Search failed. Please answer from general knowledge.' }
-              });
+              responses.push({ id: call.id, name: call.name, response: { result: 'Search failed. Use general knowledge.' } });
             }
           }
         }
-
         if (responses.length > 0) {
-          geminiWs.send(JSON.stringify({
-            toolResponse: {
-              functionResponses: responses
-            }
-          }));
+          geminiWs.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
         }
         return;
       }
@@ -189,54 +130,39 @@ Keep spoken responses under 60 words. Be warm and direct.` }]
           }
         }
         if (msg.serverContent.turnComplete) {
-          console.log('Gemini turn complete');
+          console.log('Turn complete');
           browserWs.send(JSON.stringify({ type: 'turnComplete' }));
         }
       }
 
     } catch (e) {
-      console.error('Error parsing Gemini message:', e.message);
+      console.error('Gemini msg error:', e.message);
     }
   });
 
   geminiWs.on('error', (e) => {
-    console.error('Gemini WS error:', e.message);
-    browserWs.send(JSON.stringify({ type: 'error', message: 'Gemini error: ' + e.message }));
+    console.error('Gemini error:', e.message);
+    browserWs.send(JSON.stringify({ type: 'error', message: e.message }));
   });
 
   geminiWs.on('close', (code, reason) => {
-    console.log('Gemini WS closed:', code, reason.toString());
+    console.log('Gemini closed:', code, reason.toString());
     ready = false;
   });
 
   browserWs.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
-
-      if (msg.type === 'audio' && geminiWs && geminiWs.readyState === WebSocket.OPEN && ready) {
-        const realtimeInput = {
-          realtimeInput: {
-            audio: {
-              data: msg.data,
-              mimeType: 'audio/pcm;rate=16000'
-            }
-          }
-        };
-        geminiWs.send(JSON.stringify(realtimeInput));
+      if (msg.type === 'audio' && geminiWs?.readyState === WebSocket.OPEN && ready) {
+        geminiWs.send(JSON.stringify({
+          realtimeInput: { audio: { data: msg.data, mimeType: 'audio/pcm;rate=16000' } }
+        }));
       }
-
-
     } catch (e) {
-      console.error('Error forwarding audio:', e.message);
+      console.error('Browser msg error:', e.message);
     }
   });
 
-  browserWs.on('close', () => {
-    console.log('Browser disconnected');
-    if (geminiWs) geminiWs.close();
-  });
-
-  browserWs.on('error', (e) => {
-    console.error('Browser WS error:', e.message);
-  });
+  browserWs.on('close', () => { console.log('Browser disconnected'); geminiWs?.close(); });
+  browserWs.on('error', (e) => console.error('Browser error:', e.message));
 });

@@ -8,9 +8,8 @@ const FILE_STORE_ID = 'fileSearchStores/fitness-coach-knowledge-bas-domdkpckvkx8
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
 
 const wss = new WebSocket.Server({ port: PORT });
-console.log(`Backend running on port ${PORT} (v2 with RAG)`);
+console.log(`Backend running on port ${PORT} (v2 with RAG + debug logging)`);
 
-// Search the fitness knowledge base via File Store REST API
 function searchKnowledgeBase(query) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
@@ -41,7 +40,7 @@ function searchKnowledgeBase(query) {
         try {
           const parsed = JSON.parse(data);
           const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || 'No relevant information found.';
-          console.log('RAG result for query:', query, '| Answer length:', text.length);
+          console.log('RAG result length:', text.length);
           resolve(text);
         } catch (e) {
           reject(new Error('Failed to parse RAG response: ' + e.message));
@@ -73,25 +72,29 @@ wss.on('connection', (browserWs) => {
           response_modalities: ['AUDIO']
         },
         system_instruction: {
-          parts: [{ text: `You are a fitness coach on a voice call. You have access to a knowledge base tool with proprietary fitness course materials.
+          parts: [{ text: `You are a fitness coach on a voice call with access to a fitness knowledge base.
 
-Follow this process:
-- For simple general questions (protein per kg, sleep, hydration), answer directly.
-- For specific protocols, injury rehab, periodisation, supplement stacking, or programme design — use the search_knowledge_base tool to look it up first.
-- Keep all responses concise and under 60 words when spoken.
-- Be warm, direct, and practical.
-- Never ask more than one question at a time.` }]
+IMPORTANT: You MUST use the search_knowledge_base tool for ANY question about:
+- Specific training protocols or programmes
+- Injury rehabilitation
+- Supplement protocols
+- Nutrition plans or methodologies
+- Anything from course materials or books
+
+Do NOT answer these from memory. Always search first, then answer.
+For truly simple questions (e.g. "how are you"), answer directly without searching.
+Keep spoken responses under 60 words. Be warm and direct.` }]
         },
         tools: [{
           function_declarations: [{
             name: 'search_knowledge_base',
-            description: 'Search the fitness coaching knowledge base for specific protocols, programmes, rehab methods, or detailed methodology from course materials. Use for specific questions that require proprietary information.',
+            description: 'Search the fitness coaching knowledge base. MUST be used for any specific fitness protocol, programme, rehab, supplement, or nutrition question.',
             parameters: {
               type: 'object',
               properties: {
                 query: {
                   type: 'string',
-                  description: 'The specific fitness question or topic to search for'
+                  description: 'The fitness question or topic to search for'
                 }
               },
               required: ['query']
@@ -108,7 +111,15 @@ Follow this process:
     try {
       const msg = JSON.parse(data.toString());
 
-      // Setup complete
+      // LOG EVERY MESSAGE TYPE for debugging
+      const keys = Object.keys(msg);
+      console.log('Gemini msg keys:', keys.join(', '));
+
+      // Log full message if it's not audio (to avoid flooding logs)
+      if (!msg.serverContent?.modelTurn?.parts?.some(p => p.inlineData)) {
+        console.log('Gemini msg (no audio):', JSON.stringify(msg).slice(0, 300));
+      }
+
       if (msg.setupComplete !== undefined) {
         console.log('Gemini setup complete — ready');
         ready = true;
@@ -116,8 +127,9 @@ Follow this process:
         return;
       }
 
-      // Handle function/tool calls from Gemini
+      // Handle tool calls
       if (msg.toolCall) {
+        console.log('TOOL CALL RECEIVED:', JSON.stringify(msg.toolCall));
         const functionCalls = msg.toolCall.functionCalls || [];
         const responses = [];
 
@@ -139,13 +151,12 @@ Follow this process:
               responses.push({
                 id: call.id,
                 name: call.name,
-                response: { result: 'Knowledge base search failed. Please answer from general knowledge.' }
+                response: { result: 'Search failed. Answer from general knowledge.' }
               });
             }
           }
         }
 
-        // Send all function responses back to Gemini
         if (responses.length > 0) {
           geminiWs.send(JSON.stringify({
             toolResponse: {
@@ -156,7 +167,6 @@ Follow this process:
         return;
       }
 
-      // Audio response from Gemini
       if (msg.serverContent) {
         const parts = msg.serverContent?.modelTurn?.parts || [];
         for (const part of parts) {
